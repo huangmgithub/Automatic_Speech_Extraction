@@ -1,0 +1,145 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+<meta charset="utf-8">
+<title>d3 example</title>
+<script type="text/javascript" src="http://d3js.org/d3.v5.min.js"></script>
+<style>
+.content {
+	display: flex;
+}
+.content .left {
+	width: 100%
+}
+.content .right {
+	width: 10%;
+	overflow: visible;
+    word-break: break-word;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+}
+</style>
+</head>
+<body>
+<script>
+drag = simulation => {
+
+  function dragstarted(d) {
+    if (!d3.event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x;
+    d.fy = d.y;
+  }
+
+  function dragged(d) {
+    d.fx = d3.event.x;
+    d.fy = d3.event.y;
+  }
+
+  function dragended(d) {
+    if (!d3.event.active) simulation.alphaTarget(0);
+    d.fx = null;
+    d.fy = null;
+  }
+
+  return d3.drag()
+      .on("start", dragstarted)
+      .on("drag", dragged)
+      .on("end", dragended);
+};
+
+height = 730;
+width = 900;
+
+let initData = {};
+let nodesObj = {};
+
+d3.json("/static/news.json").then((res) => {
+  initData = res;
+  drawInit(res);
+  res.nodes.forEach((item, index) => {
+	nodesObj[item.id] = item
+  })
+});
+
+function drawInit(data) {
+	draw(data, true)
+}
+
+function draw(data, first) {
+  console.log("data:", data);
+
+  let links = data.links.map(d => Object.create(d));
+  let nodes = data.nodes.map(d => Object.create(d));
+
+  const scale = d3.scaleOrdinal()
+	.domain(d3.range(nodes.length))
+	.range(d3.schemeCategory10);
+
+  const simulation = d3.forceSimulation(nodes)
+      .force("link", d3.forceLink(links).id(d => d.id))
+      .force("charge", d3.forceManyBody())
+      .force("center", d3.forceCenter(width / 2, height / 2));
+
+
+  let svg;
+
+  if (first) {
+	svg = d3.select(".left").append("svg")
+  } else {
+	svg = d3.select("svg")
+  }
+
+  svg.attr("viewBox", [0, 0, width, height]);
+
+  const link = svg.append("g")
+	  .attr("class", "links")
+      .attr("stroke", "#999")
+      .attr("stroke-opacity", 0.6)
+      .selectAll("line")
+      .data(links)
+      .join("line")
+      .attr("stroke-width", d => Math.sqrt(d.value));
+
+  const node = svg.append("g")
+      .attr("class", "nodes")
+      .attr("stroke", "#fff")
+      .attr("stroke-width", 1)
+      .selectAll("circle")
+      .data(nodes)
+      .join("circle")
+      .attr("r", 3.5)
+      .attr("fill", function(d) {
+	    return scale(d.group);
+	  })
+	  .on("click", function(d) {
+          console.log(d, d.group);
+          document.querySelector('.right').innerHTML = `<span style="color: ${scale(d.group)}">[${d.id}]<\/span>`
+      })
+      .call(drag(simulation));
+
+  node.append("title")
+      .text(d => d.id);
+
+  simulation.on("tick", () => {
+    link
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+
+    node
+        .attr("cx", d => d.x)
+        .attr("cy", d => d.y);
+  });
+}
+</script>
+<div class="content">
+<div class="left">
+</div>
+{#<div class="right">#}
+{#点击左侧点出现点的具体信息#}
+{#</div>#}
+</div>
+</body>
+</html>
