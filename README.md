@@ -58,3 +58,6 @@
 
 #### 主页面
 ![main_page](main.PNG)
+
+#### 抽取时界面
+![extract](Extract.PNG)

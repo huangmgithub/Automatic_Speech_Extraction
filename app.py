@@ -1,6 +1,6 @@
 from flask import Flask, url_for, render_template, redirect, session, Response, jsonify #将内容转换为json
 from flask.views import request
-from main import get_opinion_from_news
+from main import Speech_Extractor
 from werkzeug.utils import secure_filename # 文件上传
 import os, json
 
@@ -11,6 +11,14 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 BASE_DIR = './data'
+LTP_MODEL_DIR = './model/ltp_data_v3.4.0'
+WORD2VEC_MODEL_DIR = "./model/wiki_news"
+
+cws_model_path = os.path.join(LTP_MODEL_DIR, "cws.model")
+pos_model_path = os.path.join(LTP_MODEL_DIR, "pos.model")
+ner_model_path = os.path.join(LTP_MODEL_DIR, "ner.model")
+parser_model_path = os.path.join(LTP_MODEL_DIR, "parser.model")
+srl_model_path = os.path.join(LTP_MODEL_DIR, "pisrl_win.model")
 
 def allowed_file(filename):
     """
@@ -90,15 +98,26 @@ def get_news_from_input():
     if request.method == "POST":
         res = dict()
         sub_news = request.form['news']
+        # 加载抽取模型
+        speech_extractor = Speech_Extractor(cws_model_path,
+                                            pos_model_path,
+                                            ner_model_path,
+                                            parser_model_path,
+                                            srl_model_path)
+
         try:
             with open(os.path.join(BASE_DIR, 'words.txt'), 'r', encoding='utf-8') as f:
                 words_like_say_list = f.read().split(' ')
-                extracted_news = get_opinion_from_news(sub_news, words_like_say_list)
+                extracted_news = speech_extractor.extract(sub_news,words_like_say_list)
             res['news'] = extracted_news
             status = True
             message = "error message"
         except Exception as e:
             print(e)
+
+        # 释放模型
+        speech_extractor.release()
+
         res['status'] = status
         res['message'] = message
         return jsonify(res)
@@ -115,6 +134,12 @@ def get_news_from_file():
     if request.method == "POST":
         res = dict()
         extracted_news = []
+        # 加载抽取模型
+        speech_extractor = Speech_Extractor(cws_model_path,
+                                            pos_model_path,
+                                            ner_model_path,
+                                            parser_model_path,
+                                            srl_model_path)
         try:
             file = request.files['news_file']
             filename = secure_filename(file.filename)
@@ -125,12 +150,16 @@ def get_news_from_file():
                     words_like_say_list = f2.read().split(' ')
                     for line in f1:
                         if line:
-                            extracted_news += get_opinion_from_news(line, words_like_say_list)
+                            extracted_news = speech_extractor.extract(line, words_like_say_list)
             res['news'] = extracted_news
             status = True
             message = "error message"
         except Exception as e:
             print(e)
+
+        # 释放模型
+        speech_extractor.release()
+
         res['status'] = status
         res['message'] = message
         return jsonify(res)

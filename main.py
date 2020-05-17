@@ -1,132 +1,210 @@
-import logging # 日志记录
-from utils.ltp import LTP  # 文本处理(分词，词性分析，词性标注，命名实体识别，依存句法分析)
-from bin.get_doc_similarity import compare_txt_similarity  # 比较文本相似度
+import logging
 import os,re
-from bin.get_d3_json import save_json # save json file
+from pyltp import Segmentor, Postagger,NamedEntityRecognizer, Parser, SementicRoleLabeller
+from gensim.models import Word2Vec
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(lineno)d -  %(message)s')
 logger = logging.getLogger(__name__)
 
+# 文件目录
 BASE_DIR = './data'
 LTP_MODEL_DIR = './model/ltp_data_v3.4.0'
+WORD2VEC_MODEL_DIR = "./model/wiki_news"
 
 
-def process_news_by_ltp(news):
-    """
-    ltp处理新闻数据
-    :param news:
-    :return:
-    """
-    ltp = LTP(model_path=LTP_MODEL_DIR) # 导入ltp
-    sentence_list = ltp.sentence_split(news)  # 分句
-    words_list = ltp.word_split(news)  # 分词
-    postags_list = ltp.word_tag(words_list)  # 词性标注
-    entity_list = ltp.name_entity_recognize(words_list, postags_list)  # 命名实体识别
-    arcs, relation, heads = ltp.dependence_parse(words_list, postags_list)  # 依存句法分析
+class Speech_Extractor:
+    def __init__(self,
+                 cws_model_path,
+                 pos_model_path,
+                 ner_model_path,
+                 parser_model_path,
+                 srl_model_path):
 
-    return arcs, relation, heads, words_list, entity_list
-
-def get_opinion_from_news(news, words_like_say_list, f_w=None):
-    """
-    获得新闻任务观点
-    :param news: 一段新闻
-    :param words_like_say_list: 与“说”相近的词列表
-    :param f_w:   写入文件
-    :return:
-    """
-    arcs, relation, heads, words_list, entity_list = process_news_by_ltp(news)
-
-    full_point_list = [index for index, word in enumerate(words_list) if word == "。"]  # 句号的位置
-
-    res = []  # 返回新闻文本抽取处理结果
-
-    if not full_point_list:
-        full_point_list.append(len(words_list) - 1)
-
-    if full_point_list[-1] != len(words_list) - 1:
-        full_point_list.append(len(words_list) - 1) # 若最后一个句号不是在末尾，则添加最后一句
+        # 加载ltp模型
+        self.segmentor = Segmentor()  # 分词
+        self.segmentor.load(cws_model_path)
+        self.postagger = Postagger()  # 词性标注
+        self.postagger.load(pos_model_path)
+        self.recognizer = NamedEntityRecognizer() # 命名实体识别
+        self.recognizer.load(ner_model_path)
+        self.parser = Parser() # 依存句法分析
+        self.parser.load(parser_model_path)
+        self.labeller = SementicRoleLabeller() # 语义角色标注
+        self.labeller.load(srl_model_path)
 
 
-    for a, r, w, h, e in zip(arcs, relation, words_list, heads, entity_list):
-        if e[1] not in ['S-Ns','S-Ni','S-Nh']: # 判断新闻中是否包含人名，机构名
-            continue
-        if r == "SBV": # 过滤出SBV的主谓结构
-            if h in words_like_say_list:
-                head = a.head  # 父节点词的索引
-                print('{0}({1},{2},{3})'.format(r, w, h, head))
-                logger.info("找到符合的===> {0}：{1}".format(w, h))
-                end_point = len(words_list) - 1
-                for point in full_point_list:
-                    if point > head - 1:
-                        end_point = point  # 谓词所在句子的句号位置
-                        break
-                else:
-                    continue
-                # 本句
-                if words_list[head] in ['.','。','!','！']: # 谓词后面句号
-                    prev2_end_point = full_point_list[full_point_list.index(end_point) - 2]
-                    prev1_end_point = full_point_list[full_point_list.index(end_point) - 1]
-                    ob = words_list[prev2_end_point+1:prev1_end_point+2]
-                elif words_list[head] in [':','：']: # 谓词后面冒号
-                    ob = words_list[head+1:end_point+2]
-                else:
-                    if len(words_list[head:end_point + 1]) < 5:  # 谓词到句尾短暂时去除
-                        ob = []
-                    else:
-                        ob = ''.join(words_list[head:end_point + 1]).split('，',1)[1] # 去除谓词到第一个逗号的内容
 
-                    # 跨句子
-                    if len(full_point_list) - full_point_list.index(end_point) == 1:
-                        pass
-                    elif len(full_point_list) - full_point_list.index(end_point) == 2:
-                        next_end_point = full_point_list[-1]
-                        if len(words_list[end_point + 1: next_end_point + 1]) >= 3:
-                            print(end_point+1, next_end_point+1)
-                            ob += words_list[end_point + 1: next_end_point + 1]
-                    else:
-                        next_sentence_count = len(full_point_list) - full_point_list.index(end_point) - 1
-                        # 相关性比较
-                        for i in range(next_sentence_count):
-                            cur_sentence_start = full_point_list[full_point_list.index(end_point) - 1]
-                            cur_sentence_stop = end_point
-                            cur_sentence = words_list[cur_sentence_start + 1:cur_sentence_stop + 1]
-                            compare_sentence_stop = full_point_list[full_point_list.index(end_point) + 1]
-                            compare_sentence = words_list[cur_sentence_stop + 1:compare_sentence_stop + 1]
-                            if compare_txt_similarity(cur_sentence, compare_sentence):
-                                ob += compare_sentence
+    def release(self):
+        """
+        释放模型
+        :return:
+        """
+        self.segmentor.release()
+        self.postagger.release()
+        self.recognizer.release()
+        self.parser.release()
+        self.labeller.release()
+
+
+    def process(self, news):
+        """
+        ltp处理新闻数据
+        :param news:
+        :return:
+        """
+        words = list(self.segmentor.segment(news))
+        # 词性标注
+        postags = list(self.postagger.postag(words))
+        # 命名实体识别
+        nertags = list(self.recognizer.recognize(words, postags))
+        # 依存句法分析
+        arcs = self.parser.parse(words, postags)  # 句法分析
+
+        rely_id = [arc.head for arc in arcs]  # 提取依存父节点id
+        relation = [arc.relation for arc in arcs]  # 提取依存关系
+        heads = ['Root' if id == 0 else words[id - 1] for id in rely_id]
+
+        return arcs, relation, words, nertags, postags
+
+    def extract(self, news, says, f_w=None):
+        """
+        抽取新闻观点
+        :param news:
+        :param says:
+        :param f_w:
+        :return:
+        """
+        res = []
+
+        arcs, relation, words, nertags, postags = self.process(news)
+
+        for i, arc in enumerate(arcs):
+            # 主语
+            subject = ""
+            # 谓语
+            predicate = ""
+            # 观点
+            view = []
+
+            p = arc.head - 1 # 谓语的位置
+            if arc.relation == "SBV" and words[p] in says:
+                print("%s(%s,%s)" % (arc.relation, words[i], words[p]))
+                predicate = words[p]
+                # 主语
+                # 若主语是代词，需要找到主体
+                if postags[i] == "r":
+                    flag = False
+                    # 向前找主语
+                    for j in range(i, 0, -1):
+                        if nertags[j] != "O": # O表示不构成主体
+                            # 找出主体的定语
+                            flag = True
+                            if arcs[j].relation == "ATT": # 定中关系
+                                subject = words[j] + words[arcs[j].head - 1] # 定语和主语
                             else:
+                                subject = words[j]
+                            break
+
+                    if not flag:
+                        # 向后找主语
+                        for j in range(i ,len(words)):
+                            if nertags[j] != "O":
+                                # 找出主体的定语
+                                flag = True
+                                if arcs[j].relation == "ATT": # 定中关系
+                                    subject = words[j] + words[arcs[j].head - 1]
+                                else:
+                                    subject = words[j]
                                 break
-                            end_point = full_point_list[full_point_list.index(end_point) + 1]
-                if ob == []:
-                    continue
-                if '。' in w:
-                    w = re.sub(r'(。|\s+)', '', w) # 去掉S中误匹配的。
 
-                res.append((w, h, ''.join(ob)))  # 待返回内容
+                    # 找不到就用代词
+                    if not flag:
+                        subject = words[i]
 
+                if postags[i].startswith("n"):
+                    subject = words[i]
+
+                print(words[i], postags[i], nertags[i])
+                # if nertags[i] != "O" and postags[i].startswith("n"):
+                #     subject = words[i]
+
+                # 观点
+                start = 0
+                end = 0
+                if words[p+1] in [':','：']: # 谓词后面为冒号
+                    end = start = p + 3
+                    while end < len(words):
+                        if words[end] in ['”','’', '"']:
+                            break
+                        end += 1
+                    view = words[start:end]
+                elif words[p+1] in [",", "，"]: # 谓词后面为逗号
+                    end = start = p + 2
+                    while end < len(words):
+                        if words[end] in ['.','。','!','！', '；']:
+                            break
+                        end += 1
+                    view = words[start:end]
+                else: # 取谓语前面的句子，一般搜索引号
+                    end = p - 1
+                    while end >=0 and words[end] not in ['”','’', '"']:
+                         end -= 1
+                    start = end
+                    while start >= 0 and words[start] not in ['‘',"“", '"']:
+                        start -= 1
+                    view = words[start+1:end] if 0 <= start <= end < len(words) else ""
+
+            # 是否成功抽取
+            if not all([subject, predicate, view]):
+                continue
+            else:
+                logger.info("找到符合的===> {0} ：{1} : {2}".format(subject, predicate, view))
+                if '。' in subject:
+                    subject = re.sub(r'(。|\s+)', '', subject)  # 去掉S中误匹配的。
+
+                res.append((subject, predicate, ''.join(view)))  # 待返回内容
                 if f_w:
                     logger.info("写入ing")
-                    f_w.write("{0} {1} {2}".format(w, h, ''.join(ob)) + '\n')
-    return res
+                    f_w.write("{0} {1} {2}".format(subject, predicate, ''.join(view)) + '\n')
+        return res
 
 
 if __name__ == "__main__":
 
+    # 获取ltp模型文件名
+    cws_model_path = os.path.join(LTP_MODEL_DIR, "cws.model")
+    pos_model_path = os.path.join(LTP_MODEL_DIR, "pos.model")
+    ner_model_path = os.path.join(LTP_MODEL_DIR, "ner.model")
+    parser_model_path = os.path.join(LTP_MODEL_DIR, "parser.model")
+    srl_model_path = os.path.join(LTP_MODEL_DIR, "pisrl_win.model")
+    # word_vec_path = os.path.join(WORD2VEC_MODEL_DIR, "wiki.zh.model")
+
+    # 实例化抽取类
+    speech_extractor = Speech_Extractor(cws_model_path,
+                                        pos_model_path,
+                                        ner_model_path,
+                                        parser_model_path,
+                                        srl_model_path)
+
     # 获得与说相近的词 f1
     # 新闻存储文本
     # 创建txt文件保存结果 f_w
-
     with open(os.path.join(BASE_DIR, 'words.txt'), 'r', encoding='utf-8') as f1, \
             open(os.path.join(BASE_DIR, 'filter_news.txt'), 'r', encoding='utf-8') as f2, \
             open(os.path.join(BASE_DIR, 'result.txt'), 'w', encoding='utf-8') as f_w:
 
         # 获得与“说”相近的词列表
-        words_like_say_list = f1.read().split(' ')
+        says = f1.read().split(' ')
 
+        # 遍历处理每条新闻
         for news in f2:
-            res = get_opinion_from_news(news, words_like_say_list, f_w)
+            if len(news) < 200:
+                result = speech_extractor.extract(news, says, f_w)
 
-    # save_json() # 保存为json文件
+
+    # 释放模型
+    speech_extractor.release()
+
 
 
 
